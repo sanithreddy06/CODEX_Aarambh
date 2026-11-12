@@ -205,6 +205,33 @@ export interface GeneratedTest {
   created_at: string;
 }
 
+export interface SettingsData {
+  provider: string;
+  has_gemini_key: boolean;
+  has_groq_key: boolean;
+  has_openai_key: boolean;
+  openai_base_url: string;
+  local_model_url: string;
+  max_upload_size_mb: number;
+  max_uncompressed_size_mb: number;
+  is_localhost_only: boolean;
+}
+
+export interface UpdateSettingsPayload {
+  provider?: string;
+  gemini_api_key?: string;
+  groq_api_key?: string;
+  openai_api_key?: string;
+  openai_base_url?: string;
+  local_model_url?: string;
+  max_upload_size_mb?: number;
+}
+
+export interface ProviderTestResult {
+  success: boolean;
+  message: string;
+}
+
 const API_BASE = '/api';
 
 export const api = {
@@ -358,6 +385,38 @@ export const api = {
       body: JSON.stringify({ target_file: targetFile, framework }),
     });
     if (!res.ok) throw new Error('Failed to generate tests');
+    return res.json();
+  },
+
+  async getSettings(): Promise<SettingsData> {
+    const res = await fetch(`${API_BASE}/settings`);
+    if (!res.ok) throw new Error('Failed to fetch engine settings');
+    return res.json();
+  },
+
+  async updateSettings(payload: UpdateSettingsPayload): Promise<SettingsData> {
+    const res = await fetch(`${API_BASE}/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Failed to update settings' }));
+      throw new Error(err.detail || 'Failed to update settings');
+    }
+    return res.json();
+  },
+
+  async testProvider(provider: string, apiKey?: string, baseUrl?: string): Promise<ProviderTestResult> {
+    const res = await fetch(`${API_BASE}/settings/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, api_key: apiKey, base_url: baseUrl }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Provider test failed' }));
+      throw new Error(err.detail || 'Provider test failed');
+    }
     return res.json();
   }
 };

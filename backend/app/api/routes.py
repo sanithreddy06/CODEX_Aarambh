@@ -1,13 +1,14 @@
-import os
+import re
+import json
 import shutil
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
+from sqlalchemy import select
 
-from backend.app.core.config import settings
+from backend.app.core.config import settings, save_persisted_settings
 from backend.app.core.database import get_db
 from backend.app.core.security import validate_and_extract_zip, sanitize_filename
 from backend.app.models.entities import (
@@ -15,12 +16,13 @@ from backend.app.models.entities import (
     DatabaseModel, ArchitectureComponent, HealthFinding, WorkflowSequence,
     ConversationMessage, GeneratedTest
 )
-from backend.app.schemas.project import ProjectCreate, ProjectResponse, ProjectOverviewResponse, FileRecordSchema
+from backend.app.schemas.project import ProjectResponse, ProjectOverviewResponse, FileRecordSchema
 from backend.app.schemas.analysis import (
     DependencyGraphResponse, ImpactAnalysisRequest, ImpactAnalysisResponse,
     ArchitectureResponse, DatabaseSchemaResponse, ApiExplorerResponse,
     WorkflowsResponse, HealthReportResponse, AiChatRequest, AiChatResponse,
-    TestGenerateRequest, GeneratedTestSchema
+    TestGenerateRequest, GeneratedTestSchema,
+    SettingsResponse, SettingsUpdateRequest, ProviderTestRequest, ProviderTestResponse
 )
 from backend.app.engine.scanner import RepositoryScanner
 from backend.app.engine.parser import CodeParser
@@ -39,7 +41,7 @@ ai_client = AIIntelligenceClient()
 doc_gen = DocumentationGenerator()
 
 # -------------------------------------------------------------
-# SYSTEM HEALTH
+# SYSTEM HEALTH & SETTINGS
 # -------------------------------------------------------------
 @router.get("/health")
 async def health_check():
@@ -47,8 +49,91 @@ async def health_check():
         "status": "healthy",
         "service": settings.APP_NAME,
         "environment": settings.APP_ENV,
-        "ai_provider": settings.AI_PROVIDER
+        "ai_provider": settings.AI_PROVIDER,
+        "single_user_mode": settings.LOCAL_ONLY
     }
+
+@router.get("/settings", response_model=SettingsResponse)
+async def get_settings():
+    """Returns current configuration without revealing sensitive API keys."""
+    return SettingsResponse(
+        provider=settings.AI_PROVIDER,
+        has_gemini_key=bool(settings.GEMINI_API_KEY),
+        has_groq_key=bool(settings.GROQ_API_KEY),
+        has_openai_key=bool(settings.OPENAI_API_KEY),
+        openai_base_url=settings.OPENAI_BASE_URL,
+        local_model_url=settings.LOCAL_MODEL_URL,
+        max_upload_size_mb=settings.MAX_UPLOAD_SIZE_MB,
+        max_uncompressed_size_mb=settings.MAX_UNCOMPRESSED_SIZE_MB,
+        is_localhost_only=settings.LOCAL_ONLY
+    )
+
+@router.post("/settings", response_model=SettingsResponse)
+async def update_settings(payload: SettingsUpdateRequest):
+    """Updates and securely persists runtime engine settings."""
+    updates = {}
+    if payload.provider:
+        p_val = payload.provider.lower().strip()
+        if p_val not in ("deterministic", "gemini", "groq", "openai", "local"):
+            raise HTTPException(status_code=400, detail=f"Unsupported provider: {p_val}")
+        settings.AI_PROVIDER = p_val
+        updates["AI_PROVIDER"] = p_val
+
+    if payload.gemini_api_key is not None:
+        val = payload.gemini_api_key.strip()
+        if val and not val.startswith("****"):
+            settings.GEMINI_API_KEY = val
+            updates["GEMINI_API_KEY"] = val
+
+    if payload.groq_api_key is not None:
+        val = payload.groq_api_key.strip()
+        if val and not val.startswith("****"):
+            settings.GROQ_API_KEY = val
+            updates["GROQ_API_KEY"] = val
+
+    if payload.openai_api_key is not None:
+        val = payload.openai_api_key.strip()
+        if val and not val.startswith("****"):
+            settings.OPENAI_API_KEY = val
+            updates["OPENAI_API_KEY"] = val
+
+    if payload.openai_base_url:
+        settings.OPENAI_BASE_URL = payload.openai_base_url.strip()
+        updates["OPENAI_BASE_URL"] = settings.OPENAI_BASE_URL
+
+    if payload.local_model_url:
+        settings.LOCAL_MODEL_URL = payload.local_model_url.strip()
+        updates["LOCAL_MODEL_URL"] = settings.LOCAL_MODEL_URL
+
+    if payload.max_upload_size_mb and payload.max_upload_size_mb > 0:
+        settings.MAX_UPLOAD_SIZE_MB = payload.max_upload_size_mb
+        updates["MAX_UPLOAD_SIZE_MB"] = settings.MAX_UPLOAD_SIZE_MB
+
+    if updates:
+        save_persisted_settings(updates)
+        ai_client.reload_config()
+
+    return SettingsResponse(
+        provider=settings.AI_PROVIDER,
+        has_gemini_key=bool(settings.GEMINI_API_KEY),
+        has_groq_key=bool(settings.GROQ_API_KEY),
+        has_openai_key=bool(settings.OPENAI_API_KEY),
+        openai_base_url=settings.OPENAI_BASE_URL,
+        local_model_url=settings.LOCAL_MODEL_URL,
+        max_upload_size_mb=settings.MAX_UPLOAD_SIZE_MB,
+        max_uncompressed_size_mb=settings.MAX_UNCOMPRESSED_SIZE_MB,
+        is_localhost_only=settings.LOCAL_ONLY
+    )
+
+@router.post("/settings/test", response_model=ProviderTestResponse)
+async def test_provider(payload: ProviderTestRequest):
+    """Tests connectivity to the designated AI reasoning provider."""
+    success, message = await ai_client.test_connection(
+        provider=payload.provider,
+        api_key=payload.api_key,
+        base_url=payload.base_url
+    )
+    return ProviderTestResponse(success=success, message=message)
 
 # -------------------------------------------------------------
 # PROJECT MANAGEMENT & UPLOAD
@@ -61,7 +146,7 @@ async def upload_project(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db)
 ):
-    """Safely accepts ZIP upload, validates against zip bombs and path traversal, and extracts."""
+    """Safely accepts ZIP upload via streaming chunk writes, validates against zip bombs and path traversal, and extracts."""
     if not file.filename.endswith(".zip"):
         raise HTTPException(status_code=400, detail="Only ZIP archives are supported.")
 
@@ -76,14 +161,40 @@ async def upload_project(
     await db.commit()
     await db.refresh(project)
 
-    # Save uploaded file
+    # Save uploaded file via streaming chunk writes with size enforcement
     proj_storage_dir = Path(settings.STORAGE_DIR) / project.id
     proj_storage_dir.mkdir(parents=True, exist_ok=True)
     archive_dest = proj_storage_dir / sanitize_filename(file.filename)
 
-    with open(archive_dest, "wb") as f_dst:
-        content = await file.read()
-        f_dst.write(content)
+    max_bytes = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
+    total_bytes = 0
+    chunk_size = 64 * 1024  # 64 KB streaming buffer
+
+    try:
+        with open(archive_dest, "wb") as f_dst:
+            while chunk := await file.read(chunk_size):
+                total_bytes += len(chunk)
+                if total_bytes > max_bytes:
+                    f_dst.close()
+                    if archive_dest.exists():
+                        archive_dest.unlink()
+                    project.status = "failed"
+                    project.error_message = f"Uploaded archive exceeds maximum allowed size ({settings.MAX_UPLOAD_SIZE_MB} MB)."
+                    await db.commit()
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Uploaded archive exceeds maximum allowed size ({settings.MAX_UPLOAD_SIZE_MB} MB)."
+                    )
+                f_dst.write(chunk)
+    except HTTPException:
+        raise
+    except Exception:
+        if archive_dest.exists():
+            archive_dest.unlink()
+        project.status = "failed"
+        project.error_message = "File upload failed during streaming write."
+        await db.commit()
+        raise HTTPException(status_code=500, detail="Failed to stream archive to storage.")
 
     project.archive_path = str(archive_dest)
 
@@ -96,6 +207,10 @@ async def upload_project(
     )
 
     if not is_safe:
+        if archive_dest.exists():
+            archive_dest.unlink()
+        if extract_target.exists():
+            shutil.rmtree(extract_target, ignore_errors=True)
         project.status = "failed"
         project.error_message = f"Security check failed: {msg}"
         await db.commit()
@@ -152,20 +267,39 @@ async def get_project(project_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.delete("/projects/{project_id}")
 async def delete_project(project_id: str, db: AsyncSession = Depends(get_db)):
+    if not re.match(r"^[a-zA-Z0-9_-]+$", project_id):
+        raise HTTPException(status_code=400, detail="Invalid project identifier format.")
+
     result = await db.execute(select(Project).where(Project.id == project_id))
     p = result.scalar_one_or_none()
     if not p:
         raise HTTPException(status_code=404, detail="Project not found.")
 
-    # Clean disk directories
-    if p.extracted_path and os.path.exists(p.extracted_path):
-        shutil.rmtree(p.extracted_path, ignore_errors=True)
-    if p.archive_path and os.path.exists(os.path.dirname(p.archive_path)):
-        shutil.rmtree(os.path.dirname(p.archive_path), ignore_errors=True)
+    # Guard disk directory cleanup to prevent escaping storage roots
+    if p.extracted_path:
+        target = Path(p.extracted_path).resolve()
+        base_proj = Path(settings.PROJECTS_DIR).resolve()
+        try:
+            target.relative_to(base_proj)
+            if target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+        except ValueError:
+            pass
+
+    if p.archive_path:
+        archive_parent = Path(p.archive_path).parent.resolve()
+        base_storage = Path(settings.STORAGE_DIR).resolve()
+        try:
+            archive_parent.relative_to(base_storage)
+            if archive_parent.exists():
+                shutil.rmtree(archive_parent, ignore_errors=True)
+        except ValueError:
+            pass
 
     await db.delete(p)
     await db.commit()
     return {"message": f"Project '{p.name}' deleted successfully."}
+
 
 # -------------------------------------------------------------
 # ANALYSIS EXECUTION & STATUS
@@ -301,13 +435,17 @@ async def run_full_analysis(project_id: str):
             workflows = wf_recon.reconstruct_workflows(
                 api_endpoints=api_data.get("endpoints", []),
                 parsed_files=parsed_files,
-                db_models=db_data.get("models", [])
+                db_models=db_data.get("models", []),
+                files_metadata=files_meta,
+                root_dir=proj.extracted_path
             )
             for wf in workflows:
                 wf_seq = WorkflowSequence(
                     project_id=project_id,
                     name=wf["name"],
                     trigger=wf["trigger"],
+                    completeness=wf.get("completeness", "complete"),
+                    missing_evidence=wf.get("missing_evidence", []),
                     steps=wf["steps"],
                     evidence=wf["evidence"]
                 )
@@ -450,11 +588,17 @@ async def get_file_content(project_id: str, file_path: str, db: AsyncSession = D
     if not full_path.is_file():
         raise HTTPException(status_code=404, detail="File does not exist.")
 
+    if full_path.is_symlink():
+        raise HTTPException(status_code=400, detail="Access to symlinks is prohibited.")
+
+    if full_path.stat().st_size > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File exceeds maximum viewable size (5 MB).")
+
     try:
         content = full_path.read_text(encoding="utf-8", errors="ignore")
         return {"content": content, "file_path": file_path}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to read file content.")
 
 # -------------------------------------------------------------
 # AST EXPLORER
@@ -732,7 +876,7 @@ async def get_documentation(project_id: str, db: AsyncSession = Depends(get_db))
     markdown_doc = doc_gen.generate_markdown(p.__dict__, overview_res.model_dump(), analysis_ctx)
     return {"markdown": markdown_doc, "project_id": project_id}
 
-@router.post("/projects/{project_id}/documentation/export")
+@router.api_route("/projects/{project_id}/documentation/export", methods=["GET", "POST"])
 async def export_documentation(project_id: str, export_format: str = "markdown", db: AsyncSession = Depends(get_db)):
     doc_res = await get_documentation(project_id, db)
     markdown_doc = doc_res["markdown"]

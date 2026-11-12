@@ -1,8 +1,28 @@
-import json
-import os
-from typing import Dict, Any, List
+from typing import Dict, Any
 from fpdf import FPDF
-from pathlib import Path
+from fpdf.enums import XPos, YPos
+
+def sanitize_pdf_text(text: str) -> str:
+    """Replaces Unicode characters outside latin-1 to prevent FPDF encoding crashes."""
+    replacements = {
+        "—": "-",
+        "–": "-",
+        "“": '"',
+        "”": '"',
+        "‘": "'",
+        "’": "'",
+        "✓": "[X]",
+        "✔": "[X]",
+        "✗": "[ ]",
+        "→": "->",
+        "←": "<-",
+        "•": "*",
+        "…": "...",
+        "\u200b": "",
+    }
+    for k, v in replacements.items():
+        text = text.replace(k, v)
+    return text.encode("latin-1", "replace").decode("latin-1")
 
 class DocumentationGenerator:
     def generate_markdown(self, project: Dict[str, Any], overview: Dict[str, Any], analysis: Dict[str, Any]) -> str:
@@ -82,7 +102,7 @@ Reconstructed multi-tier operational architecture based on static import topolog
 """
         for c in components:
             md += f"### {c.get('name')} (`{c.get('layer')}`)\n"
-            md += f"- **Responsibilities:**\n"
+            md += "- **Responsibilities:**\n"
             for r in c.get("responsibilities", []):
                 md += f"  - {r}\n"
             md += f"- **Files Covered:** `{len(c.get('files', []))} files`\n"
@@ -197,27 +217,27 @@ Automatically generated unit and integration test specifications:
         
         # Document Title
         pdf.set_font("Helvetica", "B", 18)
-        pdf.cell(0, 10, "CODEX Technical Intelligence Report", ln=True, align="C")
+        pdf.cell(0, 10, "CODEX Technical Intelligence Report", new_x=XPos.LMARGIN, new_y=YPos.NEXT, align="C")
         pdf.ln(5)
 
         pdf.set_font("Helvetica", "", 10)
         for line in md_content.splitlines():
-            clean = line.replace("#", "").replace("*", "").replace("`", "").strip()
+            clean = sanitize_pdf_text(line.replace("#", "").replace("*", "").replace("`", "").strip())
             if not clean:
                 pdf.ln(3)
                 continue
             
             if line.startswith("# "):
                 pdf.set_font("Helvetica", "B", 14)
-                pdf.cell(0, 8, clean, ln=True)
+                pdf.cell(0, 8, clean, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                 pdf.set_font("Helvetica", "", 10)
             elif line.startswith("## "):
                 pdf.set_font("Helvetica", "B", 12)
-                pdf.cell(0, 7, clean, ln=True)
+                pdf.cell(0, 7, clean, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                 pdf.set_font("Helvetica", "", 10)
             elif line.startswith("### "):
                 pdf.set_font("Helvetica", "B", 11)
-                pdf.cell(0, 6, clean, ln=True)
+                pdf.cell(0, 6, clean, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
                 pdf.set_font("Helvetica", "", 10)
             else:
                 # Regular text

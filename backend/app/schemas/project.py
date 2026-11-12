@@ -1,12 +1,14 @@
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 class ProjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = ""
 
 class ProjectResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     name: str
     description: str
@@ -23,10 +25,9 @@ class ProjectResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
-
 class FileRecordSchema(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: str
     project_id: str
     relative_path: str
@@ -36,9 +37,6 @@ class FileRecordSchema(BaseModel):
     category: str
     layer: str
     is_entry_point: bool
-
-    class Config:
-        from_attributes = True
 
 class ProjectOverviewResponse(BaseModel):
     project: ProjectResponse

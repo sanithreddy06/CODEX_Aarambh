@@ -1,18 +1,84 @@
 import os
-import json
-import urllib.request
-import urllib.error
-from typing import Dict, List, Any, Tuple
+import httpx
+from typing import Dict, List, Any, Tuple, Optional
 from backend.app.core.config import settings
 
 class AIIntelligenceClient:
     def __init__(self):
+        self.reload_config()
+
+    def reload_config(self):
         self.provider = settings.AI_PROVIDER.lower()
         self.gemini_key = settings.GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY", "")
         self.groq_key = settings.GROQ_API_KEY or os.environ.get("GROQ_API_KEY", "")
         self.openai_key = settings.OPENAI_API_KEY or os.environ.get("OPENAI_API_KEY", "")
         self.openai_base = settings.OPENAI_BASE_URL
         self.local_url = settings.LOCAL_MODEL_URL
+
+    async def test_connection(
+        self,
+        provider: str,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None
+    ) -> Tuple[bool, str]:
+        """Tests connectivity and authentication for the designated AI provider."""
+        provider = provider.lower().strip()
+        
+        if provider == "deterministic":
+            return True, "Deterministic Fact Engine ready. Operating with strict zero-hallucination AST factual guarantees."
+
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            try:
+                if provider == "gemini":
+                    key = api_key or self.gemini_key
+                    if not key:
+                        return False, "Gemini API key is required but none is configured."
+                    resp = await client.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={key}")
+                    if resp.status_code == 200:
+                        return True, "Google Gemini API connection verified successfully."
+                    return False, f"Gemini API authentication failed (HTTP {resp.status_code}). Please verify your key."
+
+                elif provider == "groq":
+                    key = api_key or self.groq_key
+                    if not key:
+                        return False, "Groq Cloud API key is required but none is configured."
+                    resp = await client.get(
+                        "https://api.groq.com/openai/v1/models",
+                        headers={"Authorization": f"Bearer {key}"}
+                    )
+                    if resp.status_code == 200:
+                        return True, "Groq Cloud API connection verified successfully."
+                    return False, f"Groq authentication failed (HTTP {resp.status_code})."
+
+                elif provider == "openai":
+                    key = api_key or self.openai_key
+                    target_url = (base_url or self.openai_base).rstrip('/') + "/models"
+                    if not key:
+                        return False, "OpenAI API key is required but none is configured."
+                    resp = await client.get(
+                        target_url,
+                        headers={"Authorization": f"Bearer {key}"}
+                    )
+                    if resp.status_code == 200:
+                        return True, "OpenAI API connection verified successfully."
+                    return False, f"OpenAI authentication failed (HTTP {resp.status_code})."
+
+                elif provider == "local":
+                    target_url = (base_url or self.local_url).rstrip('/') + "/models"
+                    resp = await client.get(target_url)
+                    if resp.status_code == 200:
+                        return True, f"Local model server online and reachable at {target_url}."
+                    return False, f"Local model server responded with HTTP {resp.status_code}."
+
+                else:
+                    return False, f"Unknown AI provider: {provider}"
+
+            except httpx.ConnectError:
+                return False, f"Connection refused when attempting to reach {provider} endpoint."
+            except httpx.TimeoutException:
+                return False, f"Connection timed out when reaching {provider} endpoint."
+            except Exception as e:
+                return False, f"Provider test error: {str(e)}"
 
     async def answer_question(
         self,
@@ -99,13 +165,13 @@ class AIIntelligenceClient:
                 })
                 fact_lines.append(f"Entity: {ent['entity_type']} {ent['name']} in {ent['file_path']}:{ent['start_line']} (Calls: {', '.join(ent.get('calls', [])[:4])})")
 
-        # 4. If few matches, include high-level project summary
-        if len(fact_lines) < 3:
-            for comp in ctx.get("components", []):
-                fact_lines.append(f"Architecture Component '{comp['name']}' ({comp['layer']}) covering files: {', '.join(comp.get('files', [])[:3])}")
+        # 4. Fallback: If nothing matched specifically, provide high-level architecture overview facts
+        if not fact_lines:
+            components = ctx.get("components", [])
+            for c in components[:5]:
+                fact_lines.append(f"Architecture Component: {c['name']} (Layer: {c['layer']}) - Responsibilities: {', '.join(c.get('responsibilities', []))}")
 
-        context_text = "\n".join(fact_lines) if fact_lines else "No specific matching symbols found for query keywords."
-        return context_text, matched_sources[:8]
+        return "\n".join(fact_lines) or "No specific matching symbols found for query keywords.", matched_sources
 
     def _deterministic_fallback(
         self,
@@ -115,38 +181,30 @@ class AIIntelligenceClient:
         ctx: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Produces factual, grounded analysis strictly from extracted technical facts without requiring an LLM API key.
+        Generates a rigorous, deterministic, fact-backed explanation
+        using only extracted AST symbols, routes, and schemas without hallucinations.
         """
         q = query.lower()
         endpoints = ctx.get("endpoints", [])
         models = ctx.get("models", [])
         components = ctx.get("components", [])
-        health = ctx.get("health", {})
 
-        # Intent: Authentication
-        if any(w in q for w in ["auth", "login", "jwt", "token", "password", "register"]):
-            auth_eps = [ep for ep in endpoints if any(k in ep["path"].lower() for k in ["auth", "login", "token", "register"])]
-            auth_models = [m for m in models if any(k in m["name"].lower() for k in ["user", "account", "token", "session"])]
-            
+        # Intent: Authentication & Security
+        if any(w in q for w in ["auth", "login", "jwt", "token", "password", "security", "protect"]):
+            auth_eps = [ep for ep in endpoints if ep.get("auth_middleware") or any(k in ep["path"].lower() for k in ["auth", "login", "token"])]
+            auth_models = [m for m in models if any(k in m["name"].lower() for k in ["user", "account", "token", "session", "credential"])]
+
             lines = [
-                "### Authentication & Authorization Architecture Analysis",
+                "### Deterministic Authentication & Security Architecture Analysis",
                 "",
-                "Based on static AST and route extraction of this codebase:",
-                ""
+                "Based on static AST analysis and route inspection:",
+                f"- **Authentication Endpoints Discovered:** {len(auth_eps)}"
             ]
-            if auth_eps:
-                lines.append("**Discovered Authentication Endpoints:**")
-                for ep in auth_eps:
-                    lines.append(f"- `{ep['method']} {ep['path']}` -> Handled by `{ep['handler_name']}` in `{ep['file_path']}` (Line {ep['line_number']})")
-                lines.append("")
+            for ep in auth_eps:
+                lines.append(f"  - `{ep['method']} {ep['path']}` (Handler: `{ep['handler_name']}`, Auth: `{ep.get('auth_middleware') or 'Endpoint'}`)")
 
-            if auth_models:
-                lines.append("**Identified Identity Models:**")
-                for m in auth_models:
-                    fields = [f["name"] for f in m.get("fields", [])]
-                    lines.append(f"- Model `{m['name']}` ({m.get('orm_framework')}) defined in `{m['file_path']}` with fields: {', '.join(fields)}")
-                lines.append("")
-
+            lines.append(f"- **Identity Models:** {', '.join([m['name'] for m in auth_models]) if auth_models else 'None explicitly identified'}")
+            lines.append("")
             lines.append("**Operational Workflow:**")
             lines.append("1. Client issues credentials to the designated authentication endpoint.")
             lines.append("2. Incoming payload is parsed and verified by the controller handler.")
@@ -208,7 +266,7 @@ class AIIntelligenceClient:
 
         # Generic answer with retrieved context
         lines = [
-            f"### CODEX Static Code Intelligence Response",
+            "### CODEX Static Code Intelligence Response",
             "",
             f"In response to: *\"{query}\"*",
             "",
@@ -242,21 +300,22 @@ Evidence:
 
 User Question: {query}
 """
-        payload = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode("utf-8")
-        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
-        
-        try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                text = data["candidates"][0]["content"]["parts"][0]["text"]
-                return {
-                    "message": text,
-                    "sources": sources,
-                    "confidence": "high",
-                    "provider_used": "gemini"
-                }
-        except Exception as e:
-            raise Exception(f"Gemini API Error: {str(e)}")
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                url,
+                json={"contents": [{"parts": [{"text": prompt}]}]},
+                headers={"Content-Type": "application/json"}
+            )
+            if resp.status_code != 200:
+                raise Exception(f"Gemini API returned status {resp.status_code}: {resp.text}")
+            data = resp.json()
+            text = data["candidates"][0]["content"]["parts"][0]["text"]
+            return {
+                "message": text,
+                "sources": sources,
+                "confidence": "high",
+                "provider_used": "gemini"
+            }
 
     async def _call_openai_compatible(self, query: str, context: str, sources: List[Dict[str, Any]]) -> Dict[str, Any]:
         base_url = self.local_url if self.provider == "local" else self.openai_base
@@ -272,21 +331,26 @@ User Question: {query}
             model = "codellama"
 
         url = f"{base_url.rstrip('/')}/chat/completions"
-        payload = json.dumps({
+        payload = {
             "model": model,
             "messages": [
                 {"role": "system", "content": "You are CODEX, an expert reverse engineering code intelligence assistant. Base answers strictly on the technical evidence provided."},
                 {"role": "user", "content": f"Repository Evidence:\n{context}\n\nQuestion: {query}"}
             ]
-        }).encode("utf-8")
+        }
 
-        req = urllib.request.Request(url, data=payload, headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}"
-        })
-
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                url,
+                json=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}"
+                }
+            )
+            if resp.status_code != 200:
+                raise Exception(f"{self.provider.upper()} API returned status {resp.status_code}: {resp.text}")
+            data = resp.json()
             text = data["choices"][0]["message"]["content"]
             return {
                 "message": text,

@@ -1,0 +1,5 @@
+# Enterprise Service Defaults
+API_TIMEOUT_SECONDS=30
+LOG_LEVEL=INFO
+# Note: Demo credential for security finding demonstration:
+DEMO_GATEWAY_KEY="AKIAIOSFODNN7EXAMPLE"

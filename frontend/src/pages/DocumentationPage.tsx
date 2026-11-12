@@ -8,6 +8,7 @@ export const DocumentationPage: React.FC = () => {
   const [markdown, setMarkdown] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [downloading, setDownloading] = useState<string | null>(null);
 
   useEffect(() => {
     if (id) {
@@ -24,9 +25,29 @@ export const DocumentationPage: React.FC = () => {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleDownload = (format: 'markdown' | 'json' | 'pdf') => {
+  const handleDownload = async (format: 'markdown' | 'json' | 'pdf') => {
     if (!id) return;
-    window.open(`/api/projects/${id}/documentation/export?export_format=${format}`, '_blank');
+    try {
+      setDownloading(format);
+      const ext = format === 'pdf' ? 'pdf' : format === 'json' ? 'json' : 'md';
+      const url = `/api/projects/${id}/documentation/export?export_format=${format}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('Download failed: ' + res.statusText);
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = `codex_report_${id.slice(0, 8)}.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      console.error(err);
+      window.location.href = `/api/projects/${id}/documentation/export?export_format=${format}`;
+    } finally {
+      setDownloading(null);
+    }
   };
 
   if (loading) {
@@ -53,24 +74,27 @@ export const DocumentationPage: React.FC = () => {
           </button>
           <button
             onClick={() => handleDownload('markdown')}
-            className="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-xs text-neutral-200 border border-neutral-700 transition flex items-center space-x-1"
+            disabled={downloading !== null}
+            className="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-xs text-neutral-200 border border-neutral-700 transition flex items-center space-x-1 disabled:opacity-50"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>.MD</span>
+            <span>{downloading === 'markdown' ? 'Saving...' : '.MD'}</span>
           </button>
           <button
             onClick={() => handleDownload('json')}
-            className="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-xs text-neutral-200 border border-neutral-700 transition flex items-center space-x-1"
+            disabled={downloading !== null}
+            className="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-xs text-neutral-200 border border-neutral-700 transition flex items-center space-x-1 disabled:opacity-50"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>.JSON</span>
+            <span>{downloading === 'json' ? 'Saving...' : '.JSON'}</span>
           </button>
           <button
             onClick={() => handleDownload('pdf')}
-            className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white transition flex items-center space-x-1 shadow-sm"
+            disabled={downloading !== null}
+            className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white transition flex items-center space-x-1 shadow-sm disabled:opacity-50"
           >
-            <Download className="w-3.5 h-3.5" />
-            <span>Export PDF</span>
+            {downloading === 'pdf' ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+            <span>{downloading === 'pdf' ? 'Generating PDF...' : 'Export PDF'}</span>
           </button>
         </div>
       </div>

@@ -50,7 +50,9 @@ export const ApiExplorerPage: React.FC = () => {
     const a = document.createElement('a');
     a.href = url;
     a.download = `openapi_spec_${id?.slice(0, 8)}.json`;
+    document.body.appendChild(a);
     a.click();
+    document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
 

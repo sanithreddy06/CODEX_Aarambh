@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { TestTube2, CheckCircle2, ShieldAlert, RefreshCw, Copy, Check } from 'lucide-react';
+import { TestTube2, CheckCircle2, ShieldAlert, RefreshCw, Copy, Check, Download } from 'lucide-react';
 import { api, GeneratedTest } from '../lib/api';
 
 export const TestsPage: React.FC = () => {
@@ -45,6 +45,36 @@ export const TestsPage: React.FC = () => {
     }
   };
 
+  const handleDownloadTest = () => {
+    if (!selectedTest?.code) return;
+    const ext = selectedTest.test_framework === 'vitest' ? 'test.ts' : 'py';
+    const blob = new Blob([selectedTest.code], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${selectedTest.test_name}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadAllTests = () => {
+    if (tests.length === 0) return;
+    const fw = tests[0].test_framework;
+    const ext = fw === 'vitest' ? 'test.ts' : 'py';
+    const fullCode = tests.map(t => `# ========================================\n# ${t.test_name} (${t.test_type})\n# Target: ${t.target_file}\n# ========================================\n${t.code}\n`).join('\n\n');
+    const blob = new Blob([fullCode], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `codex_reconstructed_tests_${id?.slice(0, 8)}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   if (loading) {
     return <div className="p-12 text-center text-xs text-neutral-400">Loading test scenarios...</div>;
   }
@@ -59,6 +89,15 @@ export const TestsPage: React.FC = () => {
           </p>
         </div>
         <div className="flex items-center space-x-2">
+          {tests.length > 0 && (
+            <button
+              onClick={handleDownloadAllTests}
+              className="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-xs font-medium text-neutral-200 border border-neutral-700 transition flex items-center space-x-1"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Export All ({tests.length})</span>
+            </button>
+          )}
           <button
             onClick={() => handleGenerate('pytest')}
             disabled={generating}
@@ -131,13 +170,22 @@ export const TestsPage: React.FC = () => {
                     Framework: {selectedTest.test_framework} • Type: {selectedTest.test_type}
                   </div>
                 </div>
-                <button
-                  onClick={handleCopy}
-                  className="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-xs text-neutral-200 border border-neutral-700 transition flex items-center space-x-1"
-                >
-                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>{copied ? 'Copied' : 'Copy Test'}</span>
-                </button>
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={handleCopy}
+                    className="px-3 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-xs text-neutral-200 border border-neutral-700 transition flex items-center space-x-1"
+                  >
+                    {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{copied ? 'Copied' : 'Copy'}</span>
+                  </button>
+                  <button
+                    onClick={handleDownloadTest}
+                    className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white transition flex items-center space-x-1 shadow-sm"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download File</span>
+                  </button>
+                </div>
               </div>
 
               <div className="bg-neutral-950 p-4 rounded-xl border border-neutral-800 overflow-x-auto font-mono text-xs text-neutral-200">

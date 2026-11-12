@@ -1,36 +1,85 @@
 import ast
-import re
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
+
+# Tree-sitter imports
+try:
+    import tree_sitter
+    import tree_sitter_javascript as ts_js
+    import tree_sitter_typescript as ts_ts
+    import tree_sitter_java as ts_java
+    import tree_sitter_python as ts_py
+    TREE_SITTER_AVAILABLE = True
+except ImportError:
+    TREE_SITTER_AVAILABLE = False
+
 
 class CodeParser:
     def __init__(self, root_dir: str):
         self.root_dir = Path(root_dir).resolve()
+        self._init_tree_sitter()
+
+    def _init_tree_sitter(self):
+        self.ts_parsers: Dict[str, Any] = {}
+        if not TREE_SITTER_AVAILABLE:
+            return
+
+        try:
+            self.js_lang = tree_sitter.Language(ts_js.language())
+            self.ts_parsers["javascript"] = tree_sitter.Parser(self.js_lang)
+
+            self.ts_lang = tree_sitter.Language(ts_ts.language_typescript())
+            self.ts_parsers["typescript"] = tree_sitter.Parser(self.ts_lang)
+
+            self.tsx_lang = tree_sitter.Language(ts_ts.language_tsx())
+            self.ts_parsers["tsx"] = tree_sitter.Parser(self.tsx_lang)
+
+            self.java_lang = tree_sitter.Language(ts_java.language())
+            self.ts_parsers["java"] = tree_sitter.Parser(self.java_lang)
+
+            self.py_lang = tree_sitter.Language(ts_py.language())
+            self.ts_parsers["python"] = tree_sitter.Parser(self.py_lang)
+        except Exception:
+            self.ts_parsers = {}
 
     def parse_file(self, rel_path: str, language: str) -> Dict[str, Any]:
         """
-        Parses source file and extracts:
-        - entities: functions, methods, classes, interfaces
-        - imports: module dependencies
-        - exports: symbols exported
-        - calls: internal/external function calls
-        - ast_tree: hierarchical tree for visual AST exploration
+        Parses source file using grammar-based AST parsers.
+        Extracts entities with accurate node ranges (start_line, end_line),
+        signatures, parameters, imports, exports, and call hierarchies.
         """
         full_path = self.root_dir / rel_path
         if not full_path.is_file():
-            return {"entities": [], "imports": [], "exports": [], "calls": [], "ast_tree": None, "status": "missing_file"}
+            return {
+                "entities": [],
+                "imports": [],
+                "exports": [],
+                "calls": [],
+                "ast_tree": None,
+                "status": "missing_file"
+            }
 
         try:
             content = full_path.read_text(encoding="utf-8", errors="ignore")
+            content_bytes = content.encode("utf-8")
         except Exception as e:
-            return {"entities": [], "imports": [], "exports": [], "calls": [], "ast_tree": None, "status": f"read_error: {str(e)}"}
+            return {
+                "entities": [],
+                "imports": [],
+                "exports": [],
+                "calls": [],
+                "ast_tree": None,
+                "status": f"read_error: {str(e)}"
+            }
 
+        # Route by language
         if language == "Python":
             return self._parse_python(rel_path, content)
-        elif language in ("JavaScript", "TypeScript"):
-            return self._parse_javascript_typescript(rel_path, content, language)
-        elif language == "Java":
-            return self._parse_java(rel_path, content)
+        elif language in ("JavaScript", "TypeScript") or rel_path.endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")):
+            lang_key = "tsx" if rel_path.endswith((".tsx", ".jsx")) else ("typescript" if rel_path.endswith(".ts") else "javascript")
+            return self._parse_tree_sitter_js_ts(rel_path, content_bytes, lang_key, language)
+        elif language == "Java" or rel_path.endswith(".java"):
+            return self._parse_tree_sitter_java(rel_path, content_bytes)
         else:
             return {
                 "entities": [],
@@ -40,15 +89,15 @@ class CodeParser:
                 "ast_tree": {
                     "name": rel_path,
                     "type": "unsupported_language",
-                    "details": f"AST parsing not fully implemented for {language}. Raw facts extracted.",
+                    "details": f"AST grammar parsing not fully implemented for {language}. File recorded for inventory.",
                     "children": []
                 },
                 "status": "partial_support"
             }
 
-    # -------------------------------------------------------------
-    # PYTHON PARSER (Native AST)
-    # -------------------------------------------------------------
+    # =========================================================================
+    # 1. PYTHON PARSER (Native AST + accurate node end positions)
+    # =========================================================================
     def _parse_python(self, rel_path: str, content: str) -> Dict[str, Any]:
         entities = []
         imports = []
@@ -64,15 +113,14 @@ class CodeParser:
                 "exports": [],
                 "calls": [],
                 "ast_tree": {
-                    "name": rel_path,
+                    "name": Path(rel_path).name,
                     "type": "SyntaxError",
                     "details": f"Line {e.lineno}: {e.msg}",
                     "children": []
                 },
-                "status": f"syntax_error: {str(e)}"
+                "status": f"syntax_error: line {e.lineno}: {e.msg}"
             }
 
-        # Build visual AST tree
         ast_tree = {
             "name": Path(rel_path).name,
             "type": "Module",
@@ -118,7 +166,6 @@ class CodeParser:
                         "line": node.lineno
                     })
             elif isinstance(node, ast.Assign):
-                # Identify __all__ exports
                 for target in node.targets:
                     if isinstance(target, ast.Name) and target.id == "__all__" and isinstance(node.value, (ast.List, ast.Tuple)):
                         for elt in node.value.elts:
@@ -129,7 +176,7 @@ class CodeParser:
             "entities": entities,
             "imports": imports,
             "exports": exports,
-            "calls": list(set(calls)),
+            "calls": list(dict.fromkeys(calls)),
             "ast_tree": ast_tree,
             "status": "success"
         }
@@ -145,7 +192,6 @@ class CodeParser:
             except Exception:
                 return_type = "Any"
 
-        # Find calls inside function
         calls = []
         for child in ast.walk(node):
             if isinstance(child, ast.Call):
@@ -160,33 +206,37 @@ class CodeParser:
         if return_type:
             sig += f" -> {return_type}"
 
+        start_line = node.lineno
+        end_line = getattr(node, "end_lineno", start_line)
+
         entity = {
             "file_path": rel_path,
             "name": display_name,
             "entity_type": entity_type,
-            "start_line": node.lineno,
-            "end_line": getattr(node, "end_lineno", node.lineno),
+            "start_line": start_line,
+            "end_line": end_line,
             "language": "Python",
             "signature": sig,
             "docstring": docstring,
             "params": params,
             "return_type": return_type,
-            "calls": list(set(calls)),
+            "calls": list(dict.fromkeys(calls)),
             "evidence": {
                 "class": class_name,
                 "is_async": is_async,
-                "decorator_count": len(node.decorator_list)
+                "decorator_count": len(node.decorator_list),
+                "exact_lines": True
             }
         }
 
         ast_node = {
             "name": sig,
             "type": "FunctionDef" if not is_async else "AsyncFunctionDef",
-            "line": node.lineno,
+            "line": start_line,
             "children": [
-                {"name": f"param: {p}", "type": "Parameter", "line": node.lineno} for p in params
+                {"name": f"param: {p}", "type": "Parameter", "line": start_line} for p in params
             ] + [
-                {"name": f"calls: {c}()", "type": "Call", "line": node.lineno} for c in list(set(calls))[:10]
+                {"name": f"calls: {c}()", "type": "Call", "line": start_line} for c in list(dict.fromkeys(calls))[:10]
             ]
         }
 
@@ -212,42 +262,69 @@ class CodeParser:
                 ast_children.append(m_ast)
                 class_calls.extend(ent.get("calls", []))
 
+        start_line = node.lineno
+        end_line = getattr(node, "end_lineno", start_line)
+
         cls_entity = {
             "file_path": rel_path,
             "name": node.name,
             "entity_type": "class",
-            "start_line": node.lineno,
-            "end_line": getattr(node, "end_lineno", node.lineno),
+            "start_line": start_line,
+            "end_line": end_line,
             "language": "Python",
             "signature": f"class {node.name}({', '.join(bases)})" if bases else f"class {node.name}",
             "docstring": docstring,
             "params": bases,
             "return_type": "",
-            "calls": list(set(class_calls)),
+            "calls": list(dict.fromkeys(class_calls)),
             "evidence": {
                 "base_classes": bases,
                 "method_count": len(methods),
-                "methods": [m["name"] for m in methods]
+                "methods": [m["name"] for m in methods],
+                "exact_lines": True
             }
         }
 
         cls_ast = {
             "name": f"class {node.name}",
             "type": "ClassDef",
-            "line": node.lineno,
+            "line": start_line,
             "children": ast_children
         }
 
         return cls_entity, cls_ast, class_calls
 
-    # -------------------------------------------------------------
-    # JS / TS PARSER (Lexical & Grammar AST Extractor)
-    # -------------------------------------------------------------
-    def _parse_javascript_typescript(self, rel_path: str, content: str, language: str) -> Dict[str, Any]:
-        entities = []
-        imports = []
-        exports = []
-        calls = []
+    # =========================================================================
+    # 2. TREE-SITTER JAVASCRIPT / TYPESCRIPT / TSX PARSER
+    # =========================================================================
+    def _parse_tree_sitter_js_ts(self, rel_path: str, content_bytes: bytes, parser_key: str, language: str) -> Dict[str, Any]:
+        parser = self.ts_parsers.get(parser_key) or self.ts_parsers.get("javascript")
+        if not parser:
+            return {
+                "entities": [],
+                "imports": [],
+                "exports": [],
+                "calls": [],
+                "ast_tree": None,
+                "status": "tree_sitter_unavailable"
+            }
+
+        try:
+            tree = parser.parse(content_bytes)
+        except Exception as e:
+            return {
+                "entities": [],
+                "imports": [],
+                "exports": [],
+                "calls": [],
+                "ast_tree": None,
+                "status": f"parse_error: {str(e)}"
+            }
+
+        entities: List[Dict[str, Any]] = []
+        imports: List[Dict[str, Any]] = []
+        exports: List[str] = []
+        calls: List[str] = []
 
         ast_tree = {
             "name": Path(rel_path).name,
@@ -256,143 +333,342 @@ class CodeParser:
             "children": []
         }
 
-        lines = content.splitlines()
-
-        # Import regexes
-        # import { a, b } from 'module';
-        # import Default from './path';
-        # const x = require('module');
-        import_es_regex = re.compile(r"import\s+(?:(?:([A-Za-z0-9_$]+)|\{([^}]+)\}|\*\s+as\s+([A-Za-z0-9_$]+))\s+from\s+)?['\"]([^'\"]+)['\"]")
-        require_regex = re.compile(r"(?:const|let|var)\s+(?:([A-Za-z0-9_$]+)|\{([^}]+)\})\s*=\s*require\(['\"]([^'\"]+)['\"]")
-
-        # Function & Method regexes
-        fn_decl_regex = re.compile(r"^(?:export\s+)?(?:async\s+)?function\s*([A-Za-z0-9_$]+)\s*\(([^)]*)\)")
-        arrow_fn_regex = re.compile(r"^(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*(?:async\s*)?\(([^)]*)\)\s*(?::\s*[^=]+)?=>")
-        class_regex = re.compile(r"^(?:export\s+)?class\s+([A-Za-z0-9_$]+)(?:\s+extends\s+([A-Za-z0-9_$.]+))?")
-        interface_regex = re.compile(r"^(?:export\s+)?interface\s+([A-Za-z0-9_$]+)(?:\s+extends\s+([A-Za-z0-9_$.]+))?")
-        call_regex = re.compile(r"\b([A-Za-z0-9_$]+)\s*\(")
-
-        for line_no, line in enumerate(lines, start=1):
-            clean_line = line.strip()
-
-            # Skip comments
-            if clean_line.startswith("//") or clean_line.startswith("/*") or clean_line.startswith("*"):
-                continue
-
-            # Imports
-            if clean_line.startswith("import ") or "require(" in clean_line:
-                es_m = import_es_regex.search(clean_line)
-                if es_m:
-                    def_imp, named_imp, ns_imp, src = es_m.groups()
-                    imported_syms = def_imp or named_imp or ns_imp or ""
-                    imports.append({"source": src, "imported": imported_syms.strip(), "line": line_no})
-                    ast_tree["children"].append({"name": clean_line, "type": "ImportDeclaration", "line": line_no})
-                else:
-                    req_m = require_regex.search(clean_line)
-                    if req_m:
-                        def_v, destr_v, src = req_m.groups()
-                        imports.append({"source": src, "imported": (def_v or destr_v or "").strip(), "line": line_no})
-                        ast_tree["children"].append({"name": clean_line, "type": "RequireCall", "line": line_no})
-
-            # Exports
-            if clean_line.startswith("export default "):
-                exp_sym = clean_line.replace("export default ", "").replace(";", "").strip()
-                exports.append(exp_sym)
-                ast_tree["children"].append({"name": f"export default {exp_sym}", "type": "ExportDefault", "line": line_no})
-            elif clean_line.startswith("export "):
-                exports.append(clean_line)
-
-            # Class declarations
-            c_m = class_regex.match(clean_line)
-            if c_m:
-                c_name, c_extends = c_m.groups()
-                entities.append({
-                    "file_path": rel_path,
-                    "name": c_name,
-                    "entity_type": "class",
-                    "start_line": line_no,
-                    "end_line": line_no + 10,
-                    "language": language,
-                    "signature": f"class {c_name}" + (f" extends {c_extends}" if c_extends else ""),
-                    "docstring": "",
-                    "params": [c_extends] if c_extends else [],
-                    "return_type": "",
-                    "calls": [],
-                    "evidence": {"extends": c_extends}
-                })
-                ast_tree["children"].append({"name": f"class {c_name}", "type": "ClassDeclaration", "line": line_no})
-                continue
-
-            # Interfaces (TypeScript)
-            if language == "TypeScript":
-                i_m = interface_regex.match(clean_line)
-                if i_m:
-                    i_name, i_extends = i_m.groups()
-                    entities.append({
-                        "file_path": rel_path,
-                        "name": i_name,
-                        "entity_type": "interface",
-                        "start_line": line_no,
-                        "end_line": line_no + 5,
-                        "language": language,
-                        "signature": f"interface {i_name}",
-                        "docstring": "",
-                        "params": [i_extends] if i_extends else [],
-                        "return_type": "",
-                        "calls": [],
-                        "evidence": {"extends": i_extends}
-                    })
-                    ast_tree["children"].append({"name": f"interface {i_name}", "type": "InterfaceDeclaration", "line": line_no})
-                    continue
-
-            # Functions
-            f_m = fn_decl_regex.match(clean_line) or arrow_fn_regex.match(clean_line)
-            if f_m:
-                fn_name, fn_params = f_m.groups()
-                p_list = [p.strip().split(":")[0].strip() for p in fn_params.split(",") if p.strip()]
-                is_component = fn_name[0].isupper() and (rel_path.endswith(".tsx") or rel_path.endswith(".jsx"))
-                
-                entities.append({
-                    "file_path": rel_path,
-                    "name": fn_name,
-                    "entity_type": "component" if is_component else "function",
-                    "start_line": line_no,
-                    "end_line": line_no + 15,
-                    "language": language,
-                    "signature": f"{fn_name}({', '.join(p_list)})",
-                    "docstring": "",
-                    "params": p_list,
-                    "return_type": "",
-                    "calls": [],
-                    "evidence": {"is_component": is_component}
-                })
-                ast_tree["children"].append({
-                    "name": f"{fn_name}(...)",
-                    "type": "ComponentDeclaration" if is_component else "FunctionDeclaration",
-                    "line": line_no
-                })
-
-            # Identify function calls
-            for c_match in call_regex.findall(clean_line):
-                if c_match not in ("if", "for", "while", "switch", "catch", "function", "require", "import"):
-                    calls.append(c_match)
+        self._traverse_js_ts_nodes(
+            tree.root_node,
+            rel_path,
+            language,
+            entities,
+            imports,
+            exports,
+            calls,
+            ast_tree["children"]
+        )
 
         return {
             "entities": entities,
             "imports": imports,
-            "exports": exports,
-            "calls": list(set(calls)),
+            "exports": list(dict.fromkeys(exports)),
+            "calls": list(dict.fromkeys(calls)),
             "ast_tree": ast_tree,
             "status": "success"
         }
 
-    # -------------------------------------------------------------
-    # JAVA PARSER
-    # -------------------------------------------------------------
-    def _parse_java(self, rel_path: str, content: str) -> Dict[str, Any]:
-        entities = []
-        imports = []
-        calls = []
+    def _traverse_js_ts_nodes(
+        self,
+        node: Any,
+        rel_path: str,
+        language: str,
+        entities: List[Dict[str, Any]],
+        imports: List[Dict[str, Any]],
+        exports: List[str],
+        calls: List[str],
+        ast_children: List[Dict[str, Any]],
+        parent_class: Optional[str] = None
+    ):
+        for child in node.children:
+            node_type = child.type
+
+            # Imports: import ... from '...'
+            if node_type == "import_statement":
+                source_node = child.child_by_field_name("source")
+                source = source_node.text.decode("utf-8").strip("\"'") if source_node else ""
+                clause_text = child.text.decode("utf-8")
+                start_line = child.start_point.row + 1
+
+                imported_syms = ""
+                for sub in child.children:
+                    if sub.type in ("import_clause", "named_imports", "identifier"):
+                        imported_syms = sub.text.decode("utf-8")
+
+                imports.append({
+                    "source": source,
+                    "imported": imported_syms.strip(),
+                    "line": start_line
+                })
+                ast_children.append({
+                    "name": clause_text.strip(),
+                    "type": "ImportStatement",
+                    "line": start_line
+                })
+
+            # Exports
+            elif node_type == "export_statement":
+                export_text = child.text.decode("utf-8").strip()
+                exports.append(export_text)
+                ast_children.append({
+                    "name": export_text.splitlines()[0],
+                    "type": "ExportStatement",
+                    "line": child.start_point.row + 1
+                })
+                self._traverse_js_ts_nodes(
+                    child, rel_path, language, entities, imports, exports, calls, ast_children, parent_class
+                )
+
+            # Function Declarations
+            elif node_type in ("function_declaration", "generator_function_declaration"):
+                name_node = child.child_by_field_name("name")
+                if name_node:
+                    fn_name = name_node.text.decode("utf-8")
+                    params_node = child.child_by_field_name("parameters")
+                    params_text = params_node.text.decode("utf-8") if params_node else "()"
+                    ret_node = child.child_by_field_name("return_type")
+                    ret_type = ret_node.text.decode("utf-8").lstrip(": ") if ret_node else ""
+
+                    start_line = child.start_point.row + 1
+                    end_line = child.end_point.row + 1
+
+                    is_component = fn_name[0].isupper() and (rel_path.endswith((".tsx", ".jsx")) or "Component" in fn_name)
+                    entity_type = "component" if is_component else "function"
+
+                    fn_calls = self._collect_calls_from_node(child)
+                    calls.extend(fn_calls)
+
+                    param_names = [p.strip().split(":")[0].strip() for p in params_text.strip("()").split(",") if p.strip()]
+
+                    entities.append({
+                        "file_path": rel_path,
+                        "name": fn_name,
+                        "entity_type": entity_type,
+                        "start_line": start_line,
+                        "end_line": end_line,
+                        "language": language,
+                        "signature": f"{fn_name}{params_text}" + (f": {ret_type}" if ret_type else ""),
+                        "docstring": "",
+                        "params": param_names,
+                        "return_type": ret_type,
+                        "calls": list(dict.fromkeys(fn_calls)),
+                        "evidence": {
+                            "is_component": is_component,
+                            "exact_lines": True,
+                            "node_type": node_type
+                        }
+                    })
+
+                    ast_children.append({
+                        "name": f"{fn_name}{params_text}",
+                        "type": "ComponentDeclaration" if is_component else "FunctionDeclaration",
+                        "line": start_line
+                    })
+
+            # Lexical Declarations: const foo = () => ... or const bar = function(...) ...
+            elif node_type in ("lexical_declaration", "variable_declaration"):
+                for declarator in child.children:
+                    if declarator.type == "variable_declarator":
+                        name_node = declarator.child_by_field_name("name")
+                        val_node = declarator.child_by_field_name("value")
+
+                        if name_node and val_node and val_node.type in ("arrow_function", "function_expression"):
+                            var_name = name_node.text.decode("utf-8")
+                            params_node = val_node.child_by_field_name("parameters")
+                            params_text = params_node.text.decode("utf-8") if params_node else "()"
+                            ret_node = val_node.child_by_field_name("return_type")
+                            ret_type = ret_node.text.decode("utf-8").lstrip(": ") if ret_node else ""
+
+                            start_line = declarator.start_point.row + 1
+                            end_line = declarator.end_point.row + 1
+
+                            is_component = var_name[0].isupper() and (rel_path.endswith((".tsx", ".jsx")) or "Component" in var_name)
+                            entity_type = "component" if is_component else "function"
+
+                            fn_calls = self._collect_calls_from_node(val_node)
+                            calls.extend(fn_calls)
+
+                            param_names = [p.strip().split(":")[0].strip() for p in params_text.strip("()").split(",") if p.strip()]
+
+                            entities.append({
+                                "file_path": rel_path,
+                                "name": var_name,
+                                "entity_type": entity_type,
+                                "start_line": start_line,
+                                "end_line": end_line,
+                                "language": language,
+                                "signature": f"const {var_name} = {params_text}" + (f": {ret_type}" if ret_type else "") + " =>",
+                                "docstring": "",
+                                "params": param_names,
+                                "return_type": ret_type,
+                                "calls": list(dict.fromkeys(fn_calls)),
+                                "evidence": {
+                                    "is_arrow_function": True,
+                                    "is_component": is_component,
+                                    "exact_lines": True
+                                }
+                            })
+
+                            ast_children.append({
+                                "name": f"const {var_name} = (...)",
+                                "type": "ArrowFunctionDeclaration",
+                                "line": start_line
+                            })
+
+            # Classes: class Name extends Base { ... }
+            elif node_type == "class_declaration":
+                name_node = child.child_by_field_name("name")
+                if name_node:
+                    class_name = name_node.text.decode("utf-8")
+                    start_line = child.start_point.row + 1
+                    end_line = child.end_point.row + 1
+
+                    heritage = []
+                    for h_child in child.children:
+                        if h_child.type == "class_heritage":
+                            heritage.append(h_child.text.decode("utf-8"))
+
+                    class_ast = {
+                        "name": f"class {class_name}",
+                        "type": "ClassDeclaration",
+                        "line": start_line,
+                        "children": []
+                    }
+
+                    class_methods = []
+                    class_calls = []
+
+                    body_node = child.child_by_field_name("body")
+                    if body_node:
+                        for item in body_node.children:
+                            if item.type == "method_definition":
+                                m_name_node = item.child_by_field_name("name")
+                                m_params_node = item.child_by_field_name("parameters")
+                                m_ret_node = item.child_by_field_name("return_type")
+
+                                if m_name_node:
+                                    m_name = m_name_node.text.decode("utf-8")
+                                    m_params = m_params_node.text.decode("utf-8") if m_params_node else "()"
+                                    m_ret = m_ret_node.text.decode("utf-8").lstrip(": ") if m_ret_node else ""
+                                    m_start = item.start_point.row + 1
+                                    m_end = item.end_point.row + 1
+
+                                    m_calls = self._collect_calls_from_node(item)
+                                    class_calls.extend(m_calls)
+
+                                    p_list = [p.strip().split(":")[0].strip() for p in m_params.strip("()").split(",") if p.strip()]
+
+                                    entities.append({
+                                        "file_path": rel_path,
+                                        "name": f"{class_name}.{m_name}",
+                                        "entity_type": "method",
+                                        "start_line": m_start,
+                                        "end_line": m_end,
+                                        "language": language,
+                                        "signature": f"{m_name}{m_params}" + (f": {m_ret}" if m_ret else ""),
+                                        "docstring": "",
+                                        "params": p_list,
+                                        "return_type": m_ret,
+                                        "calls": list(dict.fromkeys(m_calls)),
+                                        "evidence": {
+                                            "class": class_name,
+                                            "exact_lines": True
+                                        }
+                                    })
+
+                                    class_ast["children"].append({
+                                        "name": f"{m_name}{m_params}",
+                                        "type": "MethodDefinition",
+                                        "line": m_start
+                                    })
+                                    class_methods.append(m_name)
+
+                    entities.append({
+                        "file_path": rel_path,
+                        "name": class_name,
+                        "entity_type": "class",
+                        "start_line": start_line,
+                        "end_line": end_line,
+                        "language": language,
+                        "signature": f"class {class_name} " + " ".join(heritage),
+                        "docstring": "",
+                        "params": heritage,
+                        "return_type": "",
+                        "calls": list(dict.fromkeys(class_calls)),
+                        "evidence": {
+                            "heritage": heritage,
+                            "method_count": len(class_methods),
+                            "methods": class_methods,
+                            "exact_lines": True
+                        }
+                    })
+
+                    ast_children.append(class_ast)
+                    calls.extend(class_calls)
+
+            # Interfaces (TypeScript)
+            elif node_type == "interface_declaration":
+                name_node = child.child_by_field_name("name")
+                if name_node:
+                    iface_name = name_node.text.decode("utf-8")
+                    start_line = child.start_point.row + 1
+                    end_line = child.end_point.row + 1
+
+                    entities.append({
+                        "file_path": rel_path,
+                        "name": iface_name,
+                        "entity_type": "interface",
+                        "start_line": start_line,
+                        "end_line": end_line,
+                        "language": language,
+                        "signature": f"interface {iface_name}",
+                        "docstring": "",
+                        "params": [],
+                        "return_type": "",
+                        "calls": [],
+                        "evidence": {
+                            "exact_lines": True
+                        }
+                    })
+
+                    ast_children.append({
+                        "name": f"interface {iface_name}",
+                        "type": "InterfaceDeclaration",
+                        "line": start_line
+                    })
+
+            # Top-level call expressions
+            elif node_type == "call_expression":
+                fn_node = child.child_by_field_name("function")
+                if fn_node:
+                    calls.append(fn_node.text.decode("utf-8"))
+
+    def _collect_calls_from_node(self, node: Any) -> List[str]:
+        found = []
+        if node.type == "call_expression":
+            fn_node = node.child_by_field_name("function")
+            if fn_node:
+                found.append(fn_node.text.decode("utf-8"))
+
+        for child in node.children:
+            found.extend(self._collect_calls_from_node(child))
+        return found
+
+    # =========================================================================
+    # 3. TREE-SITTER JAVA PARSER
+    # =========================================================================
+    def _parse_tree_sitter_java(self, rel_path: str, content_bytes: bytes) -> Dict[str, Any]:
+        parser = self.ts_parsers.get("java")
+        if not parser:
+            return {
+                "entities": [],
+                "imports": [],
+                "exports": [],
+                "calls": [],
+                "ast_tree": None,
+                "status": "tree_sitter_java_unavailable"
+            }
+
+        try:
+            tree = parser.parse(content_bytes)
+        except Exception as e:
+            return {
+                "entities": [],
+                "imports": [],
+                "exports": [],
+                "calls": [],
+                "ast_tree": None,
+                "status": f"parse_error: {str(e)}"
+            }
+
+        entities: List[Dict[str, Any]] = []
+        imports: List[Dict[str, Any]] = []
+        calls: List[str] = []
 
         ast_tree = {
             "name": Path(rel_path).name,
@@ -401,63 +677,133 @@ class CodeParser:
             "children": []
         }
 
-        class_regex = re.compile(r"(?:public\s+|private\s+|protected\s+)?class\s+([A-Za-z0-9_$]+)(?:\s+extends\s+([A-Za-z0-9_$]+))?(?:\s+implements\s+([A-Za-z0-9_$,\s]+))?")
-        method_regex = re.compile(r"(?:public|protected|private|static|\s)+[\w\<\>\[\]]+\s+([A-Za-z0-9_$]+)\s*\(([^)]*)\)\s*(?:throws\s+[\w\s,]+)?\s*\{")
+        for child in tree.root_node.children:
+            # Imports
+            if child.type == "import_declaration":
+                imp_text = child.text.decode("utf-8").replace("import", "").replace(";", "").strip()
+                start_line = child.start_point.row + 1
+                imports.append({
+                    "source": imp_text,
+                    "imported": imp_text.split(".")[-1],
+                    "line": start_line
+                })
+                ast_tree["children"].append({
+                    "name": f"import {imp_text}",
+                    "type": "ImportDeclaration",
+                    "line": start_line
+                })
 
-        lines = content.splitlines()
-        current_class = None
+            # Classes and Interfaces
+            elif child.type in ("class_declaration", "interface_declaration", "record_declaration"):
+                name_node = child.child_by_field_name("name")
+                if not name_node:
+                    continue
 
-        for line_no, line in enumerate(lines, start=1):
-            clean_line = line.strip()
-            if clean_line.startswith("import "):
-                imp_mod = clean_line.replace("import ", "").replace(";", "").strip()
-                imports.append({"source": imp_mod, "imported": imp_mod.split(".")[-1], "line": line_no})
-                ast_tree["children"].append({"name": f"import {imp_mod}", "type": "Import", "line": line_no})
+                class_name = name_node.text.decode("utf-8")
+                start_line = child.start_point.row + 1
+                end_line = child.end_point.row + 1
+                is_iface = child.type == "interface_declaration"
 
-            c_m = class_regex.search(clean_line)
-            if c_m:
-                current_class = c_m.group(1)
+                super_class = child.child_by_field_name("superclass")
+                interfaces_node = child.child_by_field_name("interfaces")
+                extends_text = super_class.text.decode("utf-8") if super_class else ""
+                implements_text = interfaces_node.text.decode("utf-8") if interfaces_node else ""
+
+                class_ast = {
+                    "name": f"{'interface' if is_iface else 'class'} {class_name}",
+                    "type": "InterfaceDeclaration" if is_iface else "ClassDeclaration",
+                    "line": start_line,
+                    "children": []
+                }
+
+                class_methods = []
+                class_calls = []
+
+                body = child.child_by_field_name("body")
+                if body:
+                    for item in body.children:
+                        if item.type in ("method_declaration", "constructor_declaration"):
+                            m_name_node = item.child_by_field_name("name")
+                            m_params_node = item.child_by_field_name("parameters")
+                            m_type_node = item.child_by_field_name("type")
+
+                            if m_name_node:
+                                m_name = m_name_node.text.decode("utf-8")
+                                m_params = m_params_node.text.decode("utf-8") if m_params_node else "()"
+                                m_ret = m_type_node.text.decode("utf-8") if m_type_node else "void"
+                                m_start = item.start_point.row + 1
+                                m_end = item.end_point.row + 1
+
+                                m_calls = self._collect_java_calls(item)
+                                class_calls.extend(m_calls)
+
+                                p_list = [p.strip().split()[-1] for p in m_params.strip("()").split(",") if p.strip()]
+
+                                entities.append({
+                                    "file_path": rel_path,
+                                    "name": f"{class_name}.{m_name}",
+                                    "entity_type": "method",
+                                    "start_line": m_start,
+                                    "end_line": m_end,
+                                    "language": "Java",
+                                    "signature": f"{m_ret} {m_name}{m_params}",
+                                    "docstring": "",
+                                    "params": p_list,
+                                    "return_type": m_ret,
+                                    "calls": list(dict.fromkeys(m_calls)),
+                                    "evidence": {
+                                        "class": class_name,
+                                        "exact_lines": True
+                                    }
+                                })
+
+                                class_ast["children"].append({
+                                    "name": f"{m_name}{m_params}",
+                                    "type": "MethodDeclaration",
+                                    "line": m_start
+                                })
+                                class_methods.append(m_name)
+
                 entities.append({
                     "file_path": rel_path,
-                    "name": current_class,
-                    "entity_type": "class",
-                    "start_line": line_no,
-                    "end_line": line_no + 30,
+                    "name": class_name,
+                    "entity_type": "interface" if is_iface else "class",
+                    "start_line": start_line,
+                    "end_line": end_line,
                     "language": "Java",
-                    "signature": clean_line.replace("{", "").strip(),
+                    "signature": f"public class {class_name} {extends_text} {implements_text}".strip(),
                     "docstring": "",
-                    "params": [c_m.group(2)] if c_m.group(2) else [],
+                    "params": [extends_text, implements_text] if extends_text or implements_text else [],
                     "return_type": "",
-                    "calls": [],
-                    "evidence": {"extends": c_m.group(2), "implements": c_m.group(3)}
+                    "calls": list(dict.fromkeys(class_calls)),
+                    "evidence": {
+                        "extends": extends_text,
+                        "implements": implements_text,
+                        "method_count": len(class_methods),
+                        "methods": class_methods,
+                        "exact_lines": True
+                    }
                 })
-                ast_tree["children"].append({"name": f"class {current_class}", "type": "ClassDeclaration", "line": line_no})
 
-            m_m = method_regex.search(clean_line)
-            if m_m and not any(kw in clean_line for kw in ["if", "while", "catch", "class", "new"]):
-                m_name = m_m.group(1)
-                m_params = [p.strip() for p in m_m.group(2).split(",") if p.strip()]
-                entities.append({
-                    "file_path": rel_path,
-                    "name": f"{current_class}.{m_name}" if current_class else m_name,
-                    "entity_type": "method",
-                    "start_line": line_no,
-                    "end_line": line_no + 15,
-                    "language": "Java",
-                    "signature": clean_line.replace("{", "").strip(),
-                    "docstring": "",
-                    "params": m_params,
-                    "return_type": "",
-                    "calls": [],
-                    "evidence": {"class": current_class}
-                })
-                ast_tree["children"].append({"name": f"{m_name}()", "type": "MethodDeclaration", "line": line_no})
+                ast_tree["children"].append(class_ast)
+                calls.extend(class_calls)
 
         return {
             "entities": entities,
             "imports": imports,
             "exports": [],
-            "calls": list(set(calls)),
+            "calls": list(dict.fromkeys(calls)),
             "ast_tree": ast_tree,
             "status": "success"
         }
+
+    def _collect_java_calls(self, node: Any) -> List[str]:
+        found = []
+        if node.type == "method_invocation":
+            name_node = node.child_by_field_name("name")
+            if name_node:
+                found.append(name_node.text.decode("utf-8"))
+
+        for child in node.children:
+            found.extend(self._collect_java_calls(child))
+        return found

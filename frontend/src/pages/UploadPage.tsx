@@ -88,13 +88,11 @@ export const UploadPage: React.FC = () => {
       setError(null);
       setProgressMsg('Fetching bundled sample e-commerce repository...');
 
-      // Fetch sample_project.zip from root or create a Blob
       const response = await fetch('/sample_project.zip');
       let blob: Blob;
       if (response.ok) {
         blob = await response.blob();
       } else {
-        // Fallback: request from api or create synthetic zip
         throw new Error('Bundled sample zip could not be retrieved from static root.');
       }
 
@@ -115,6 +113,37 @@ export const UploadPage: React.FC = () => {
     }
   };
 
+  const handleLoadOmniCloudShowcase = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      setProgressMsg('Fetching bundled full-stack multi-language repository...');
+
+      const response = await fetch('/omnicloud_showcase.zip');
+      let blob: Blob;
+      if (response.ok) {
+        blob = await response.blob();
+      } else {
+        throw new Error('Bundled omnicloud_showcase.zip could not be retrieved from static root.');
+      }
+
+      const sampleFile = new File([blob], 'omnicloud_showcase.zip', { type: 'application/zip' });
+      setProgressMsg('Ingesting multi-language repository and executing AST reverse engineering...');
+
+      const project = await api.uploadProject(
+        'OmniCloud Enterprise Platform',
+        'Full-stack showcase with Python FastAPI, TypeScript, React TSX, Java Spring Boot, Prisma, Express.',
+        sampleFile
+      );
+
+      navigate(`/projects/${project.id}`);
+    } catch (err: any) {
+      setError('Could not auto-load showcase project: ' + err.message);
+      setLoading(false);
+      setProgressMsg(null);
+    }
+  };
+
   return (
     <div className="container mx-auto px-4 py-12 max-w-2xl">
       <div className="text-center mb-8">
@@ -125,24 +154,34 @@ export const UploadPage: React.FC = () => {
       </div>
 
       {/* Demo Project Shortcut Banner */}
-      <div className="mb-6 p-4 rounded-xl bg-gradient-to-r from-indigo-950/40 via-purple-950/30 to-indigo-950/40 border border-indigo-800/40 flex items-center justify-between">
+      <div className="mb-6 p-4 rounded-xl bg-gradient-to-r from-indigo-950/40 via-purple-950/30 to-indigo-950/40 border border-indigo-800/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center space-x-3">
-          <div className="p-2 rounded-lg bg-indigo-500/20 text-indigo-400">
+          <div className="p-2 rounded-lg bg-indigo-500/20 text-indigo-400 shrink-0">
             <Sparkles className="w-5 h-5" />
           </div>
           <div>
-            <div className="text-xs font-semibold text-white">Live Hackathon Demonstration?</div>
-            <div className="text-[11px] text-neutral-400">Instantly test with the bundled multi-tier E-commerce store repo.</div>
+            <div className="text-xs font-semibold text-white">Live Multi-Stack Demonstrations</div>
+            <div className="text-[11px] text-neutral-400">Instantly test multi-language reverse engineering with bundled architectures:</div>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={handleLoadSampleProject}
-          disabled={loading}
-          className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition shadow-sm shrink-0"
-        >
-          {loading ? 'Processing...' : 'Load Demo Repo'}
-        </button>
+        <div className="flex items-center space-x-2 shrink-0">
+          <button
+            type="button"
+            onClick={handleLoadOmniCloudShowcase}
+            disabled={loading}
+            className="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition shadow-sm"
+          >
+            {loading ? 'Processing...' : 'Load All-Stacks Showcase'}
+          </button>
+          <button
+            type="button"
+            onClick={handleLoadSampleProject}
+            disabled={loading}
+            className="px-2.5 py-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs font-medium transition"
+          >
+            Demo Store
+          </button>
+        </div>
       </div>
 
       <form onSubmit={handleSubmit} className="p-6 rounded-xl bg-neutral-900/60 border border-neutral-800 space-y-6">
@@ -193,7 +232,7 @@ export const UploadPage: React.FC = () => {
                   Drop your project ZIP here, or <span className="text-indigo-400 underline">browse</span>
                 </span>
                 <span className="text-xs text-neutral-400 mt-1">
-                  Supports Python, JS, TS, Java, Go, Rust up to 50MB
+                  Supports Python, JS, TS, Java, Go, Rust up to 200MB
                 </span>
               </div>
             )}

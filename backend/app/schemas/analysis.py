@@ -1,6 +1,6 @@
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict
 
 class AstEntitySchema(BaseModel):
     id: str
@@ -18,8 +18,7 @@ class AstEntitySchema(BaseModel):
     calls: List[str]
     evidence: Dict[str, Any]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class DependencyNode(BaseModel):
     id: str
@@ -66,16 +65,14 @@ class ArchitectureComponentSchema(BaseModel):
     outgoing_connections: List[str]
     evidence: Dict[str, Any]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class ArchitectureResponse(BaseModel):
     layers: List[str]
     components: List[ArchitectureComponentSchema]
     connections: List[Dict[str, Any]]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class DatabaseModelSchema(BaseModel):
     id: Optional[str] = ""
@@ -87,16 +84,14 @@ class DatabaseModelSchema(BaseModel):
     relationships: List[Dict[str, Any]]
     evidence: Dict[str, Any]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class DatabaseSchemaResponse(BaseModel):
     models: List[DatabaseModelSchema]
     er_nodes: List[Dict[str, Any]]
     er_edges: List[Dict[str, Any]]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class ApiEndpointSchema(BaseModel):
     id: str
@@ -113,8 +108,7 @@ class ApiEndpointSchema(BaseModel):
     related_models: List[str]
     evidence: Dict[str, Any]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class ApiExplorerResponse(BaseModel):
     endpoints: List[ApiEndpointSchema]
@@ -123,8 +117,7 @@ class ApiExplorerResponse(BaseModel):
     methods: Dict[str, int]
     openapi_spec: Dict[str, Any]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class HealthFindingSchema(BaseModel):
     id: str
@@ -135,8 +128,7 @@ class HealthFindingSchema(BaseModel):
     affected_files: List[str]
     evidence: Dict[str, Any]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class HealthReportResponse(BaseModel):
     health_score: int
@@ -145,8 +137,7 @@ class HealthReportResponse(BaseModel):
     summary_by_severity: Dict[str, int]
     summary_by_category: Dict[str, int]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class WorkflowStep(BaseModel):
     order: int
@@ -154,26 +145,29 @@ class WorkflowStep(BaseModel):
     action: str
     file: str
     line: int
+    end_line: Optional[int] = None
     layer: Optional[str] = ""
+    evidence_type: Optional[str] = ""
+    confidence: Optional[str] = "confirmed"
+    status: Optional[str] = "confirmed"
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class WorkflowSchema(BaseModel):
     id: str
     name: str
     trigger: str
+    completeness: Optional[str] = "complete"
+    missing_evidence: Optional[List[str]] = []
     steps: List[WorkflowStep]
     evidence: Dict[str, Any]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class WorkflowsResponse(BaseModel):
     workflows: List[WorkflowSchema]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class AiChatRequest(BaseModel):
     message: str
@@ -199,3 +193,33 @@ class GeneratedTestSchema(BaseModel):
     code: str
     review_status: str
     created_at: datetime
+
+class SettingsResponse(BaseModel):
+    provider: str
+    has_gemini_key: bool
+    has_groq_key: bool
+    has_openai_key: bool
+    openai_base_url: str
+    local_model_url: str
+    max_upload_size_mb: int
+    max_uncompressed_size_mb: int
+    is_localhost_only: bool
+
+class SettingsUpdateRequest(BaseModel):
+    provider: Optional[str] = None
+    gemini_api_key: Optional[str] = None
+    groq_api_key: Optional[str] = None
+    openai_api_key: Optional[str] = None
+    openai_base_url: Optional[str] = None
+    local_model_url: Optional[str] = None
+    max_upload_size_mb: Optional[int] = None
+
+class ProviderTestRequest(BaseModel):
+    provider: str
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+
+class ProviderTestResponse(BaseModel):
+    success: bool
+    message: str
+

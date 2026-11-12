@@ -1,6 +1,5 @@
 from typing import Dict, List, Any
 from pathlib import Path
-from collections import defaultdict
 
 LAYER_ORDER = [
     "Presentation Layer",
@@ -27,7 +26,6 @@ class ArchitectureReconstructor:
         Synthesizes files, dependencies, endpoints, and models to reconstruct
         the application's multi-tier architecture with verifiable evidence.
         """
-        layer_components: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         active_layers = set()
         components = []
 

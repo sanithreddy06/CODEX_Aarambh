@@ -146,6 +146,8 @@ class WorkflowSequence(Base):
     project_id = Column(String(36), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     name = Column(String(255), nullable=False)
     trigger = Column(String(255), default="")
+    completeness = Column(String(50), default="complete")
+    missing_evidence = Column(JSON, default=list)
     steps = Column(JSON, default=list)  # [{"order": 1, "component": "AuthCtrl", "action": "verify_token", "file": "..."}]
     evidence = Column(JSON, default=dict)
 

@@ -1,8 +1,4 @@
-import pytest
-import os
-import io
 import zipfile
-from pathlib import Path
 
 from backend.app.core.security import validate_and_extract_zip, scan_file_for_secrets
 from backend.app.engine.scanner import RepositoryScanner
@@ -11,7 +7,6 @@ from backend.app.engine.dependency_graph import DependencyGraphAnalyzer
 from backend.app.engine.api_discoverer import ApiDiscoverer
 from backend.app.engine.database_analyzer import DatabaseAnalyzer
 from backend.app.engine.health_analyzer import HealthAnalyzer
-from backend.app.engine.test_reconstructor import TestReconstructor
 
 def test_zip_security_path_traversal(tmp_path):
     """Verifies that malicious zip archives attempting Zip Slip are rejected."""

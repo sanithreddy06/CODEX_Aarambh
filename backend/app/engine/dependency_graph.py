@@ -1,4 +1,4 @@
-from typing import Dict, List, Any, Set, Tuple
+from typing import Dict, List, Any, Set
 from collections import defaultdict, deque
 from pathlib import Path
 
@@ -101,7 +101,7 @@ class DependencyGraphAnalyzer:
 
         # Exact match or suffix match
         for f in file_paths:
-            if f.endswith(f"/{import_src}.py") or f.endswith(f"/{import_src}.ts") or f.endswith(f"/{import_src}.js"):
+            if f == f"{import_src}.py" or f.endswith(f"/{import_src}.py") or f.endswith(f"/{import_src}.ts") or f.endswith(f"/{import_src}.js"):
                 return f
 
         return ""

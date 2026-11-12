@@ -1,7 +1,7 @@
 import ast
 import re
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Tuple
 
 class DatabaseAnalyzer:
     def __init__(self, root_dir: str):
@@ -184,11 +184,12 @@ class DatabaseAnalyzer:
                     })
                     if is_fk:
                         # Extract relation target
-                        m = re.search(r"references:\s*\[([^\]]+)\]", line)
+                        ref_match = re.search(r"references:\s*\[([^\]]+)\]", line)
                         relationships.append({
                             "target": f_type.rstrip("[]"),
                             "type": "1-N" if "[]" in f_type else "N-1",
                             "field": f_name,
+                            "referenced_field": ref_match.group(1).strip() if ref_match else None,
                             "confidence": "confirmed",
                             "evidence": f"Prisma @relation on {line}"
                         })
